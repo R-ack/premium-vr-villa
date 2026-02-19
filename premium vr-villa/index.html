@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Premium VR Villa Experience</title>
+    <meta name="description" content="A realistic 3D VR villa experience built with A-Frame.">
+    <script src="script/aframe.min.js"></script>
+    <script>
+
+      /* ── Height controls (unchanged) ── */
+      AFRAME.registerComponent('height-controls', {
+        schema: { speed: { default: 0.1 } },
+        init: function () {
+          this.up = false; this.down = false;
+          window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space')                          this.up   = true;
+            if (e.code === 'ShiftLeft' || e.code === 'KeyQ') this.down = true;
+          });
+          window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space')                          this.up   = false;
+            if (e.code === 'ShiftLeft' || e.code === 'KeyQ') this.down = false;
+          });
+        },
+        tick: function () {
+          var pos = this.el.getAttribute('position');
+          if (this.up)   pos.y += this.data.speed;
+          if (this.down) pos.y -= this.data.speed;
+          this.el.setAttribute('position', pos);
+        }
+      });
+
+      /* ════════════════════════════════════════════════════════════
+         POOL-CAUSTICS  – animated golden caustic patches on the floor
+         ════════════════════════════════════════════════════════════ */
+      AFRAME.registerComponent('pool-caustics', {
+        init: function () {
+          var vertexShader = `
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `;
+          var fragmentShader = `
+            uniform float uTime;
+            varying vec2  vUv;
+
+            float caustic(vec2 p, float t) {
+              float c  = sin(p.x * 9.0  + t * 1.1) * sin(p.y * 9.0  - t * 0.9);
+              c += sin(p.x * 14.0 - t * 0.7) * sin(p.y * 12.0 + t * 1.3);
+              c += sin((p.x + p.y) * 10.0 + t * 0.8);
+              return c * 0.33 + 0.5;
+            }
+
+            void main() {
+              float c1 = caustic(vUv,  uTime * 0.55);
+              float c2 = caustic(vUv + vec2(0.05, 0.03), uTime * 0.45);
+              float pattern = pow(min(c1, c2), 2.5);
+
+              float tileX = step(0.92, fract(vUv.x * 10.0));
+              float tileY = step(0.92, fract(vUv.y * 17.0));
+              float grout = max(tileX, tileY) * 0.35;
+
+              vec3 tileColor  = mix(vec3(0.55, 0.85, 0.92), vec3(0.65, 0.92, 0.98), fract(vUv.x * 10.0 + vUv.y * 17.0));
+              vec3 causticCol = vec3(1.0, 0.97, 0.85) * pattern * 0.8;
+              vec3 groutCol   = vec3(0.82, 0.88, 0.90);
+
+              vec3 col = mix(mix(tileColor + causticCol, groutCol, grout), vec3(1.0), pattern * 0.12);
+              gl_FragColor = vec4(col, 1.0);
+            }
+          `;
+
+          this.uniforms = { uTime: { value: 0 } };
+          var geo = new THREE.PlaneGeometry(6, 10);
+          var mat = new THREE.ShaderMaterial({
+            uniforms: this.uniforms,
+            vertexShader, fragmentShader,
+            side: THREE.DoubleSide
+          });
+          this.el.object3D.clear();
+          this.el.object3D.add(new THREE.Mesh(geo, mat));
+        },
+        tick: function (t) { this.uniforms.uTime.value = t / 1000; }
+      });
+
+      /* ════════════════════════════════════════════════════════════
+         HOTEL-WATER  – crystal-clear surface with micro-ripples,
+                        depth gradient, fresnel and specular shimmer
+         ════════════════════════════════════════════════════════════ */
+      AFRAME.registerComponent('hotel-water', {
+        schema: { segments: { default: 80 } },
+        init: function () {
+          var vertexShader = `
+            uniform float uTime;
+            varying vec2  vUv;
+            varying vec3  vNormal;
+
+            void main() {
+              vUv = uv;
+
+              float w1 = sin(position.x * 4.5  + uTime * 1.8) * 0.018;
+              float w2 = sin(position.y * 3.8  - uTime * 1.4) * 0.014;
+              float w3 = sin((position.x * 2.0 + position.y * 3.0) + uTime * 2.2) * 0.010;
+              float w4 = cos(position.x * 6.0  - position.y * 4.5 + uTime * 1.0) * 0.006;
+
+              vec3 pos = position;
+              pos.z += w1 + w2 + w3 + w4;
+
+              float dWdx = cos(position.x * 4.5 + uTime * 1.8) * 4.5 * 0.018
+                         + cos((position.x * 2.0 + position.y * 3.0) + uTime * 2.2) * 2.0 * 0.010
+                         - sin(position.x * 6.0 - position.y * 4.5 + uTime * 1.0) * 6.0 * 0.006;
+              float dWdy = -sin(position.y * 3.8 - uTime * 1.4) * 3.8 * 0.014
+                         + cos((position.x * 2.0 + position.y * 3.0) + uTime * 2.2) * 3.0 * 0.010
+                         + sin(position.x * 6.0 - position.y * 4.5 + uTime * 1.0) * 4.5 * 0.006;
+
+              vNormal = normalize(vec3(-dWdx, -dWdy, 1.0));
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+          `;
+
+          var fragmentShader = `
+            uniform float uTime;
+            varying vec2  vUv;
+            varying vec3  vNormal;
+
+            void main() {
+              float edgeDist = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+              float depth    = smoothstep(0.0, 0.25, edgeDist);
+
+              vec3 shallow = vec3(0.20, 0.82, 0.90);
+              vec3 deep    = vec3(0.04, 0.42, 0.62);
+              vec3 waterCol = mix(shallow, deep, depth * 0.65);
+
+              vec3  sunDir = normalize(vec3(0.6, 1.0, 0.5));
+              float spec   = pow(max(dot(vNormal, sunDir), 0.0), 80.0) * 0.9;
+
+              float microX = sin(vUv.x * 60.0 + uTime * 3.0) * 0.5 + 0.5;
+              float microY = sin(vUv.y * 60.0 - uTime * 2.5) * 0.5 + 0.5;
+              float micro  = microX * microY * 0.06;
+
+              float foam   = smoothstep(0.04, 0.0, edgeDist) * 0.55;
+
+              float fresnel = mix(0.40, 0.72, 1.0 - depth);
+
+              vec3 col = waterCol + vec3(spec) + vec3(micro) + vec3(foam);
+              gl_FragColor = vec4(col, fresnel);
+            }
+          `;
+
+          this.uniforms = { uTime: { value: 0 } };
+          var segs = this.data.segments;
+          var geo  = new THREE.PlaneGeometry(6, 10, segs, segs);
+          var mat  = new THREE.ShaderMaterial({
+            uniforms: this.uniforms,
+            vertexShader, fragmentShader,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          });
+          this.el.object3D.clear();
+          this.el.object3D.add(new THREE.Mesh(geo, mat));
+        },
+        tick: function (t) { this.uniforms.uTime.value = t / 1000; }
+      });
+
+      /* ════════════════════════════════════════════════════════════
+         PALM-TREE  – procedural palm built from Three.js primitives
+         ════════════════════════════════════════════════════════════ */
+      AFRAME.registerComponent('palm-tree', {
+        schema: { height: { default: 5.5 }, trunkColor: { default: '#8B6914' }, frondColor: { default: '#2d7a2d' } },
+        init: function () {
+          var d = this.data;
+          var root = new THREE.Group();
+
+          /* Tapered trunk */
+          var trunkGeo = new THREE.CylinderGeometry(0.12, 0.22, d.height, 8);
+          var trunkMat = new THREE.MeshStandardMaterial({ color: d.trunkColor, roughness: 0.95 });
+          var trunk    = new THREE.Mesh(trunkGeo, trunkMat);
+          trunk.position.y = d.height / 2;
+          root.add(trunk);
+
+          /* Fronds – 8 planes fanning out from crown */
+          var frondMat = new THREE.MeshStandardMaterial({ color: d.frondColor, roughness: 0.7, side: THREE.DoubleSide });
+          for (var i = 0; i < 8; i++) {
+            var frondGeo = new THREE.PlaneGeometry(0.4, 2.6);
+            var frond    = new THREE.Mesh(frondGeo, frondMat);
+            frond.position.y = d.height + 0.8;
+            frond.rotation.z = -0.55;                          /* droop angle */
+            frond.rotation.y = (i / 8) * Math.PI * 2;
+            /* Offset pivot so frond radiates from crown centre */
+            frond.geometry.translate(0, 1.1, 0);
+            root.add(frond);
+          }
+
+          /* Small sphere crown */
+          var crownGeo = new THREE.SphereGeometry(0.35, 8, 6);
+          var crownMat = new THREE.MeshStandardMaterial({ color: '#1a5c1a', roughness: 0.8 });
+          var crown    = new THREE.Mesh(crownGeo, crownMat);
+          crown.position.y = d.height;
+          root.add(crown);
+
+          this.el.object3D.add(root);
+        }
+      });
+
+      /* ════════════════════════════════════════════════════════════
+         FOUNTAIN-JETS  – animated water arcs using Three.js
+         ════════════════════════════════════════════════════════════ */
+      AFRAME.registerComponent('fountain-jets', {
+        schema: { jets: { default: 6 }, color: { default: '#55ccff' } },
+        init: function () {
+          var d       = this.data;
+          var group   = new THREE.Group();
+          var jetMat  = new THREE.MeshStandardMaterial({
+            color: d.color, transparent: true, opacity: 0.75,
+            roughness: 0.1, metalness: 0.3
+          });
+
+          this.jets = [];
+          for (var i = 0; i < d.jets; i++) {
+            var angle = (i / d.jets) * Math.PI * 2;
+            var radius = 0.28;
+            /* Each jet = stack of small spheres that animate upward */
+            var jetGroup = new THREE.Group();
+            jetGroup.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+
+            var droplets = [];
+            for (var j = 0; j < 6; j++) {
+              var geo  = new THREE.SphereGeometry(0.045 - j * 0.005, 5, 4);
+              var drop = new THREE.Mesh(geo, jetMat);
+              drop.userData.phase  = (j / 6);
+              drop.userData.angle  = angle;
+              drop.userData.radius = radius;
+              jetGroup.add(drop);
+              droplets.push(drop);
+            }
+            group.add(jetGroup);
+            this.jets.push(droplets);
+          }
+          this.el.object3D.add(group);
+        },
+        tick: function (t) {
+          var time = t / 1000;
+          this.jets.forEach(function (droplets) {
+            droplets.forEach(function (drop) {
+              var phase  = drop.userData.phase;
+              var cycle  = ((time * 1.4 + phase) % 1.0);
+              /* Parabolic arc: rise then fall */
+              drop.position.y = Math.sin(cycle * Math.PI) * 1.1;
+              drop.position.x = Math.cos(drop.userData.angle) * (0.1 + cycle * 0.25);
+              drop.position.z = Math.sin(drop.userData.angle) * (0.1 + cycle * 0.25);
+              /* Fade out near top */
+              drop.material.opacity = 0.75 * (1.0 - Math.pow(cycle, 2.5));
+            });
+          });
+        }
+      });
+
+    </script>
+    <style>
+      body { margin: 0; overflow: hidden; background-color: #000; }
+    </style>
+  </head>
+  <body>
+    <a-scene
+      renderer="antialias: true; colorManagement: true; toneMapping: ACESFilmic; exposure: 0.35;"
+      cursor="rayOrigin: mouse"
+      raycaster="objects: .clickable"
+      background="color: #87CEEB">
+
+      <a-assets>
+        <a-asset-item id="house-model" src="models/low_poly_suburban_house_with_interior.glb"></a-asset-item>
+        <a-asset-item id="car-model"   src="models/car.glb"></a-asset-item>
+        <img id="grass-tex"    src="Textures/grass.jpg">
+        <img id="pavement-tex" src="Textures/pavement.jpg">
+        <img id="wall-tex"     src="Textures/wall.jpg">
+      </a-assets>
+
+      <a-sky color="#87CEEB"></a-sky>
+
+      <a-plane position="0 0 0" rotation="-90 0 0" width="200" height="200"
+               material="src: #grass-tex; repeat: 50 50; roughness: 0.9; metalness: 0;"
+               shadow="receive: true"></a-plane>
+
+      <a-entity id="fence">
+        <a-box position="0 1.5 -25"  width="50"  height="3" depth="0.5"
+               material="src: #wall-tex; repeat: 50 3; roughness: 0.8;" shadow="cast:true;receive:true;"></a-box>
+        <a-box position="-25 1.5 0"  width="0.5" height="3" depth="50"
+               material="src: #wall-tex; repeat: 50 3; roughness: 0.8;" shadow="cast:true;receive:true;"></a-box>
+        <a-box position="25 1.5 0"   width="0.5" height="3" depth="50"
+               material="src: #wall-tex; repeat: 50 3; roughness: 0.8;" shadow="cast:true;receive:true;"></a-box>
+        <a-box position="-15 1.5 25" width="20"  height="3" depth="0.5"
+               material="src: #wall-tex; repeat: 20 3; roughness: 0.8;" shadow="cast:true;receive:true;"></a-box>
+        <a-box position="15 1.5 25"  width="20"  height="3" depth="0.5"
+               material="src: #wall-tex; repeat: 20 3; roughness: 0.8;" shadow="cast:true;receive:true;"></a-box>
+      </a-entity>
+
+      <!-- ═══════════════════════════════════════
+           ENTRANCE GATE  (centred in front gap)
+           ═══════════════════════════════════════ -->
+      <a-entity id="gate" position="0 0 25">
+
+        <!-- Left gate post -->
+        <a-box position="-4.8 1.5 0" width="0.4" height="3" depth="0.4"
+               material="color: #2a2a2a; roughness: 0.4; metalness: 0.7;"
+               shadow="cast:true;receive:true;"></a-box>
+        <!-- Right gate post -->
+        <a-box position=" 4.8 1.5 0" width="0.4" height="3" depth="0.4"
+               material="color: #2a2a2a; roughness: 0.4; metalness: 0.7;"
+               shadow="cast:true;receive:true;"></a-box>
+
+        <!-- Post caps (gold pyramid tops) -->
+        <a-cone position="-4.8 3.2 0" radius-bottom="0.28" radius-top="0.02" height="0.4"
+                material="color: #c8a84b; roughness: 0.3; metalness: 0.85;"></a-cone>
+        <a-cone position=" 4.8 3.2 0" radius-bottom="0.28" radius-top="0.02" height="0.4"
+                material="color: #c8a84b; roughness: 0.3; metalness: 0.85;"></a-cone>
+
+        <!-- Left gate panel (slightly open) -->
+        <a-entity position="-2.5 0 0" rotation="0 -15 0">
+          <a-box position="0 2.5 0" width="4.2" height="0.12" depth="0.1"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="0 1.5 0" width="4.2" height="0.12" depth="0.1"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="0 0.5 0" width="4.2" height="0.12" depth="0.1"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="-1.8 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="-1.0 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="-0.2 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position=" 0.6 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position=" 1.4 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-cone position="-1.8 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position="-1.0 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position="-0.2 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position=" 0.6 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position=" 1.4 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+        </a-entity>
+
+        <!-- Right gate panel (mirrored, slightly open) -->
+        <a-entity position="2.5 0 0" rotation="0 15 0">
+          <a-box position="0 2.5 0" width="4.2" height="0.12" depth="0.1"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="0 1.5 0" width="4.2" height="0.12" depth="0.1"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="0 0.5 0" width="4.2" height="0.12" depth="0.1"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="-1.4 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position="-0.6 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position=" 0.2 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position=" 1.0 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-box position=" 1.8 1.5 0" width="0.08" height="2.2" depth="0.08"
+                 material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+          <a-cone position="-1.4 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position="-0.6 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position=" 0.2 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position=" 1.0 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+          <a-cone position=" 1.8 2.7 0" radius-bottom="0.06" radius-top="0.01" height="0.28"
+                  material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+        </a-entity>
+
+        <!-- Overhead arch beam -->
+        <a-box position="0 3.05 0" width="9.6" height="0.2" depth="0.25"
+               material="color: #1c1c1c; roughness: 0.3; metalness: 0.85;"></a-box>
+        <!-- Centre ornament -->
+        <a-cone position="0 3.3 0" radius-bottom="0.18" radius-top="0.02" height="0.35"
+                material="color: #c8a84b; roughness: 0.3; metalness: 0.9;"></a-cone>
+
+      </a-entity>
+      <!-- end gate -->
+
+      <!-- Glowing Walkway Lanterns -->
+      <a-entity id="decorations">
+        <!-- Lantern post -3, 24 -->
+        <a-entity position="-3 0 24">
+          <a-cylinder radius="0.05" height="1.8" color="#2a2a2a" material="roughness:0.4;metalness:0.7;"></a-cylinder>
+          <a-box position="0 1.1 0" width="0.22" height="0.28" depth="0.22" material="color:#1a1a1a;roughness:0.3;metalness:0.6;"></a-box>
+          <a-sphere position="0 1.1 0" radius="0.1" material="color:#ffe085;emissive:#ffcc44;emissiveIntensity:1.5;roughness:0.2;"></a-sphere>
+          <a-light type="point" color="#ffd97a" intensity="0.9" distance="7" position="0 1.1 0"></a-light>
+        </a-entity>
+        <!-- Lantern post 3, 24 -->
+        <a-entity position="3 0 24">
+          <a-cylinder radius="0.05" height="1.8" color="#2a2a2a" material="roughness:0.4;metalness:0.7;"></a-cylinder>
+          <a-box position="0 1.1 0" width="0.22" height="0.28" depth="0.22" material="color:#1a1a1a;roughness:0.3;metalness:0.6;"></a-box>
+          <a-sphere position="0 1.1 0" radius="0.1" material="color:#ffe085;emissive:#ffcc44;emissiveIntensity:1.5;roughness:0.2;"></a-sphere>
+          <a-light type="point" color="#ffd97a" intensity="0.9" distance="7" position="0 1.1 0"></a-light>
+        </a-entity>
+        <!-- Lantern post -3, 14 -->
+        <a-entity position="-3 0 14">
+          <a-cylinder radius="0.05" height="1.8" color="#2a2a2a" material="roughness:0.4;metalness:0.7;"></a-cylinder>
+          <a-box position="0 1.1 0" width="0.22" height="0.28" depth="0.22" material="color:#1a1a1a;roughness:0.3;metalness:0.6;"></a-box>
+          <a-sphere position="0 1.1 0" radius="0.1" material="color:#ffe085;emissive:#ffcc44;emissiveIntensity:1.5;roughness:0.2;"></a-sphere>
+          <a-light type="point" color="#ffd97a" intensity="0.9" distance="7" position="0 1.1 0"></a-light>
+        </a-entity>
+        <!-- Lantern post 3, 14 -->
+        <a-entity position="3 0 14">
+          <a-cylinder radius="0.05" height="1.8" color="#2a2a2a" material="roughness:0.4;metalness:0.7;"></a-cylinder>
+          <a-box position="0 1.1 0" width="0.22" height="0.28" depth="0.22" material="color:#1a1a1a;roughness:0.3;metalness:0.6;"></a-box>
+          <a-sphere position="0 1.1 0" radius="0.1" material="color:#ffe085;emissive:#ffcc44;emissiveIntensity:1.5;roughness:0.2;"></a-sphere>
+          <a-light type="point" color="#ffd97a" intensity="0.9" distance="7" position="0 1.1 0"></a-light>
+        </a-entity>
+      </a-entity>
+
+      <a-plane position="0 0.02 12.5" rotation="-90 0 0" width="10" height="25"
+               material="src: #pavement-tex; repeat: 5 12; roughness: 0.9; metalness: 0.1;"
+               shadow="receive: true"></a-plane>
+
+      <a-entity id="main-house" gltf-model="#house-model" position="0 1.5 0"
+                shadow="receive:true;cast:true;"></a-entity>
+
+      <a-entity gltf-model="#car-model" position="-14 0.55 18" rotation="0 90 0"
+                scale="0.4 0.4 0.4" shadow="cast:true;receive:true;"></a-entity>
+
+      <!-- ═══════════════════════════════════════════════════════
+           DRIVEWAY  – widened centre lane + left parking bay
+           ═══════════════════════════════════════════════════════ -->
+      <!-- Wide centre driveway lane (replaces narrow walkway visually) -->
+      <a-plane position="0 0.02 18" rotation="-90 0 0" width="12" height="16"
+               material="src: #pavement-tex; repeat: 6 8; roughness: 0.85; metalness: 0.1;"
+               shadow="receive:true"></a-plane>
+
+      <!-- Left parking bay -->
+      <a-plane position="-14 0.02 18" rotation="-90 0 0" width="10" height="8"
+               material="src: #pavement-tex; repeat: 5 4; roughness: 0.85; metalness: 0.1;"
+               shadow="receive:true"></a-plane>
+
+      <!-- Connecting strip from main drive to parking bay -->
+      <a-plane position="-8 0.02 18" rotation="-90 0 0" width="4" height="8"
+               material="src: #pavement-tex; repeat: 2 4; roughness: 0.85; metalness: 0.1;"
+               shadow="receive:true"></a-plane>
+
+      <!-- Parking bay bay markings (white lines) -->
+      <a-box position="-11 0.03 18" width="0.12" height="0.01" depth="6" color="#ffffff"></a-box>
+      <a-box position="-17 0.03 18" width="0.12" height="0.01" depth="6" color="#ffffff"></a-box>
+      <a-box position="-14 0.03 21" width="6"   height="0.01" depth="0.12" color="#ffffff"></a-box>
+      <a-box position="-14 0.03 15" width="6"   height="0.01" depth="0.12" color="#ffffff"></a-box>
+
+      <!-- ═══════════════════════════════════════════════════════
+           ENTRANCE FOUNTAIN  (centred at top of driveway)
+           ═══════════════════════════════════════════════════════ -->
+      <a-entity id="fountain" position="0 0 21">
+        <!-- Outer basin ring -->
+        <a-cylinder radius="1.5" height="0.35" color="#e8e0d4"
+                    material="roughness:0.5;metalness:0.1;" shadow="cast:true;receive:true;"></a-cylinder>
+        <!-- Basin floor (inner pool) -->
+        <a-cylinder position="0 0.18 0" radius="1.35" height="0.02"
+                    material="color:#a8d8e8;roughness:0.1;metalness:0.4;transparent:true;opacity:0.85;"></a-cylinder>
+        <!-- Central plinth -->
+        <a-cylinder position="0 0.18 0" radius="0.18" height="0.55"
+                    material="color:#d4cfc8;roughness:0.4;metalness:0.2;"></a-cylinder>
+        <!-- Top tier bowl -->
+        <a-cylinder position="0 0.6 0" radius="0.45" height="0.12"
+                    material="color:#e8e0d4;roughness:0.45;metalness:0.15;"></a-cylinder>
+        <!-- Fountain jets -->
+        <a-entity position="0 0.72 0" fountain-jets="jets:8;color:#88ddff"></a-entity>
+        <!-- Fountain water surface shimmer -->
+        <a-cylinder position="0 0.2 0" radius="1.32" height="0.01"
+                    material="color:#55ccff;transparent:true;opacity:0.55;roughness:0.05;metalness:0.6;"
+                    animation="property:material.opacity;from:0.45;to:0.65;dur:1800;loop:true;dir:alternate;easing:easeInOutSine;">
+        </a-cylinder>
+        <!-- Fountain light -->
+        <a-light type="point" color="#88eeff" intensity="0.8" distance="6" position="0 0.5 0"></a-light>
+      </a-entity>
+
+      <!-- ═══════════════════════════════════════════════════════
+           PALM TREES
+           ═══════════════════════════════════════════════════════ -->
+      <!-- Driveway flanking palms (4 pairs) -->
+      <a-entity position="-7 0 23"  palm-tree="height:5.0"></a-entity>
+      <a-entity position=" 7 0 23"  palm-tree="height:5.0"></a-entity>
+      <a-entity position="-7 0 17"  palm-tree="height:5.5"></a-entity>
+      <a-entity position=" 7 0 17"  palm-tree="height:5.5"></a-entity>
+      <a-entity position="-7 0 11"  palm-tree="height:5.2"></a-entity>
+      <a-entity position=" 7 0 11"  palm-tree="height:5.2"></a-entity>
+
+      <!-- Pool area palms -->
+      <a-entity position="4  0 19"  palm-tree="height:6.0"></a-entity>
+      <a-entity position="17 0 15"  palm-tree="height:5.8"></a-entity>
+      <a-entity position="17 0  1"  palm-tree="height:6.2"></a-entity>
+      <a-entity position="4  0 -4"  palm-tree="height:5.5"></a-entity>
+
+      <!-- Corner accent palms -->
+      <a-entity position="-20 0  20" palm-tree="height:6.5"></a-entity>
+      <a-entity position=" 20 0  20" palm-tree="height:6.5"></a-entity>
+      <a-entity position="-20 0 -15" palm-tree="height:6.0"></a-entity>
+      <a-entity position=" 20 0 -15" palm-tree="height:6.0"></a-entity>
+
+      <!-- ─── Low garden bushes along fence interior ─── -->
+      <!-- Left fence row -->
+      <a-sphere position="-23 0.5 -10" radius="0.7" material="color:#2d6e2d;roughness:0.9;"></a-sphere>
+      <a-sphere position="-23 0.5   0" radius="0.8" material="color:#356635;roughness:0.9;"></a-sphere>
+      <a-sphere position="-23 0.5  10" radius="0.7" material="color:#2d6e2d;roughness:0.9;"></a-sphere>
+      <!-- Right fence row -->
+      <a-sphere position=" 23 0.5 -10" radius="0.7" material="color:#2d6e2d;roughness:0.9;"></a-sphere>
+      <a-sphere position=" 23 0.5   0" radius="0.8" material="color:#356635;roughness:0.9;"></a-sphere>
+      <a-sphere position=" 23 0.5  10" radius="0.7" material="color:#2d6e2d;roughness:0.9;"></a-sphere>
+      <!-- Back fence row -->
+      <a-sphere position="-10 0.5 -23" radius="0.75" material="color:#2d6e2d;roughness:0.9;"></a-sphere>
+      <a-sphere position="  0 0.5 -23" radius="0.80" material="color:#356635;roughness:0.9;"></a-sphere>
+      <a-sphere position=" 10 0.5 -23" radius="0.75" material="color:#2d6e2d;roughness:0.9;"></a-sphere>
+
+      <!-- ═══════════════════════════════════════════════════════
+           HOTEL SWIMMING POOL
+           ═══════════════════════════════════════════════════════ -->
+      <a-entity id="pool-area" position="10 0 8">
+
+        <!-- Travertine deck -->
+        <a-box position="0 0.0 0" width="10" height="0.18" depth="14"
+               material="color: #e8e0d4; roughness: 0.55; metalness: 0.05;"
+               shadow="receive:true"></a-box>
+
+        <!-- Deck grout lines - lengthwise -->
+        <a-box position="-2  0.095 0" width="0.04" height="0.01" depth="14" color="#c5bdb2"></a-box>
+        <a-box position=" 0  0.095 0" width="0.04" height="0.01" depth="14" color="#c5bdb2"></a-box>
+        <a-box position=" 2  0.095 0" width="0.04" height="0.01" depth="14" color="#c5bdb2"></a-box>
+        <!-- crosswise -->
+        <a-box position="0 0.095 -4"  width="10" height="0.01" depth="0.04" color="#c5bdb2"></a-box>
+        <a-box position="0 0.095  0"  width="10" height="0.01" depth="0.04" color="#c5bdb2"></a-box>
+        <a-box position="0 0.095  4"  width="10" height="0.01" depth="0.04" color="#c5bdb2"></a-box>
+
+        <!-- Pool coping (raised white marble lip) -->
+        <a-box position="-3.18 0.22 0" width="0.32" height="0.1" depth="10.32"
+               material="color: #f5f2ee; roughness: 0.3; metalness: 0.1;"></a-box>
+        <a-box position=" 3.18 0.22 0" width="0.32" height="0.1" depth="10.32"
+               material="color: #f5f2ee; roughness: 0.3; metalness: 0.1;"></a-box>
+        <a-box position="0 0.22 -5.18" width="6.64" height="0.1" depth="0.32"
+               material="color: #f5f2ee; roughness: 0.3; metalness: 0.1;"></a-box>
+        <a-box position="0 0.22  5.18" width="6.64" height="0.1" depth="0.32"
+               material="color: #f5f2ee; roughness: 0.3; metalness: 0.1;"></a-box>
+
+        <!-- Pool basin walls -->
+        <a-box position="0 -1.52 0"     width="6"    height="0.12" depth="10"
+               material="color: #b8dde8; roughness: 0.5;"></a-box>
+        <a-box position="-3.02 -0.76 0"  width="0.12" height="1.64" depth="10"
+               material="color: #c2e2ee; roughness: 0.45;"></a-box>
+        <a-box position=" 3.02 -0.76 0"  width="0.12" height="1.64" depth="10"
+               material="color: #c2e2ee; roughness: 0.45;"></a-box>
+        <a-box position="0 -0.76 -5.02" width="6"    height="1.64" depth="0.12"
+               material="color: #c2e2ee; roughness: 0.45;"></a-box>
+        <a-box position="0 -0.76  5.02" width="6"    height="1.64" depth="0.12"
+               material="color: #c2e2ee; roughness: 0.45;"></a-box>
+
+        <!-- Animated caustic tile floor -->
+        <a-entity position="0 -1.46 0" rotation="-90 0 0" pool-caustics></a-entity>
+
+        <!-- Animated water surface -->
+        <a-entity position="0 0.14 0" rotation="-90 0 0"
+                  hotel-water="segments: 80"></a-entity>
+
+        <!-- Waterline accent tiles -->
+        <a-box position="-3.0 0.02 0" width="0.06" height="0.14" depth="10"
+               material="color: #5bbcd4; roughness: 0.3; metalness: 0.2;"></a-box>
+        <a-box position=" 3.0 0.02 0" width="0.06" height="0.14" depth="10"
+               material="color: #5bbcd4; roughness: 0.3; metalness: 0.2;"></a-box>
+
+        <!-- Pool steps -->
+        <a-box position="-2 -0.48  4.3"  width="1.8" height="0.24" depth="0.9"
+               material="color: #d0ecf2; roughness: 0.5;"></a-box>
+        <a-box position="-2 -0.96  4.65" width="1.8" height="0.24" depth="0.6"
+               material="color: #d0ecf2; roughness: 0.5;"></a-box>
+        <a-box position="-2 -1.2   4.9"  width="1.8" height="0.24" depth="0.36"
+               material="color: #d0ecf2; roughness: 0.5;"></a-box>
+
+        <!-- Stainless pool ladder -->
+        <a-cylinder position=" 2.6 -0.5 4.4" radius="0.03" height="1.6"
+                    material="color: #cccccc; roughness: 0.2; metalness: 0.9;"></a-cylinder>
+        <a-cylinder position=" 2.2 -0.5 4.4" radius="0.03" height="1.6"
+                    material="color: #cccccc; roughness: 0.2; metalness: 0.9;"></a-cylinder>
+        <a-box position="2.4 -0.3  4.4" width="0.4" height="0.03" depth="0.03"
+               material="color: #bbbbbb; roughness: 0.2; metalness: 0.9;"></a-box>
+        <a-box position="2.4 -0.7  4.4" width="0.4" height="0.03" depth="0.03"
+               material="color: #bbbbbb; roughness: 0.2; metalness: 0.9;"></a-box>
+        <a-box position="2.4 -1.1  4.4" width="0.4" height="0.03" depth="0.03"
+               material="color: #bbbbbb; roughness: 0.2; metalness: 0.9;"></a-box>
+
+        <!-- Submerged pool lights -->
+        <a-light type="point" color="#7ee8fa" intensity="1.4" distance="9"  position="0 -1.2 0"></a-light>
+        <a-light type="point" color="#b5f0f9" intensity="0.6" distance="5"  position="-2 -1.2  3"></a-light>
+        <a-light type="point" color="#b5f0f9" intensity="0.6" distance="5"  position=" 2 -1.2 -3"></a-light>
+
+        <!-- Sun loungers – left side -->
+        <a-box position="-5.5 0.38 -2" width="0.7" height="0.1" depth="2.0"
+               material="color: #f0e6c8; roughness: 0.9;"></a-box>
+        <a-box position="-5.5 0.38  2" width="0.7" height="0.1" depth="2.0"
+               material="color: #f0e6c8; roughness: 0.9;"></a-box>
+        <!-- Sun loungers – right side -->
+        <a-box position=" 5.5 0.38 -2" width="0.7" height="0.1" depth="2.0"
+               material="color: #f0e6c8; roughness: 0.9;"></a-box>
+        <a-box position=" 5.5 0.38  2" width="0.7" height="0.1" depth="2.0"
+               material="color: #f0e6c8; roughness: 0.9;"></a-box>
+
+        <!-- Lounger legs -->
+        <a-box position="-5.5 0.22 -2.8" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position="-5.5 0.22 -1.2" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position="-5.5 0.22  1.2" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position="-5.5 0.22  2.8" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position=" 5.5 0.22 -2.8" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position=" 5.5 0.22 -1.2" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position=" 5.5 0.22  1.2" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+        <a-box position=" 5.5 0.22  2.8" width="0.6" height="0.18" depth="0.08" color="#d4c9a0"></a-box>
+
+        <!-- Umbrella poles -->
+        <a-cylinder position="-5.5 1.2 -2" radius="0.04" height="2.4"
+                    material="color: #d4c9a0; roughness: 0.5;"></a-cylinder>
+        <a-cylinder position=" 5.5 1.2 -2" radius="0.04" height="2.4"
+                    material="color: #d4c9a0; roughness: 0.5;"></a-cylinder>
+        <a-cylinder position="-5.5 1.2  2" radius="0.04" height="2.4"
+                    material="color: #d4c9a0; roughness: 0.5;"></a-cylinder>
+        <a-cylinder position=" 5.5 1.2  2" radius="0.04" height="2.4"
+                    material="color: #d4c9a0; roughness: 0.5;"></a-cylinder>
+
+        <!-- Umbrella canopies -->
+        <a-cone position="-5.5 2.55 -2" radius-bottom="1.3" radius-top="0.05" height="0.45"
+                material="color: #e8c97a; roughness: 0.8;"></a-cone>
+        <a-cone position=" 5.5 2.55 -2" radius-bottom="1.3" radius-top="0.05" height="0.45"
+                material="color: #e8c97a; roughness: 0.8;"></a-cone>
+        <a-cone position="-5.5 2.55  2" radius-bottom="1.3" radius-top="0.05" height="0.45"
+                material="color: #d4896a; roughness: 0.8;"></a-cone>
+        <a-cone position=" 5.5 2.55  2" radius-bottom="1.3" radius-top="0.05" height="0.45"
+                material="color: #d4896a; roughness: 0.8;"></a-cone>
+
+      </a-entity>
+
+      <!-- Camera Rig -->
+      <a-entity id="rig" position="0 1.6 35" height-controls>
+        <a-camera look-controls wasd-controls="acceleration: 65; fly: true"></a-camera>
+      </a-entity>
+
+      <!-- Lighting -->
+      <a-light type="hemisphere" color="#fff" groundColor="#2d5a27" intensity="0.6"></a-light>
+      <a-light type="directional" color="#fff" intensity="0.75" position="20 40 10"
+               castShadow="true"
+               shadow-camera-left="-40" shadow-camera-right="40"
+               shadow-camera-top="40"  shadow-camera-bottom="-40"
+               shadow-mapSize="2048 2048"></a-light>
+      <a-light type="ambient" color="#fff" intensity="0.4"></a-light>
+
+    </a-scene>
+  </body>
+</html>
